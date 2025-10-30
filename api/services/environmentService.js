@@ -1,15 +1,42 @@
 const fs = require('fs').promises;
 const path = require('path');
-const glob = require('glob');
+const { glob } = require('glob');
 const { promisify } = require('util');
 const { exec } = require('child_process');
 
-const globAsync = promisify(glob);
+// glob is already async in v10+
 const execAsync = promisify(exec);
 
 // Path to the project root (one level up from api/)
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const ENV_FILE_PATTERN = path.join(PROJECT_ROOT, '.env-*.json');
+
+/**
+ * Find bash executable on Windows
+ */
+function findBashExecutable() {
+    const fs = require('fs');
+    const bashPaths = [
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+        'C:\\Windows\\System32\\bash.exe',
+    ];
+    
+    for (const bashPath of bashPaths) {
+        try {
+            if (fs.existsSync(bashPath)) {
+                console.log(`? Found bash at: ${bashPath}`);
+                return `"${bashPath}"`;
+            }
+        } catch (err) {
+            // Continue
+        }
+    }
+    
+    return 'bash';
+}
+
+const BASH_CMD = findBashExecutable();
 
 /**
  * List all sandbox environments
@@ -18,7 +45,7 @@ const ENV_FILE_PATTERN = path.join(PROJECT_ROOT, '.env-*.json');
 async function listEnvironments() {
     try {
         // Find all environment metadata files
-        const envFiles = await globAsync(ENV_FILE_PATTERN);
+        const envFiles = await glob(ENV_FILE_PATTERN);
         
         if (envFiles.length === 0) {
             return [];
@@ -106,9 +133,9 @@ async function createEnvironment(options) {
     try {
         const { name, region, nodeCount, nodeSize, tags } = options;
         
-        // Build command
+        // Build command - use Git Bash
         const scriptPath = path.join(PROJECT_ROOT, 'scripts', 'create_env.sh');
-        let command = `bash "${scriptPath}" --name ${name}`;
+        let command = `${BASH_CMD} "${scriptPath}" --name ${name}`;
         
         if (region) command += ` --region ${region}`;
         if (nodeCount) command += ` --node-count ${nodeCount}`;
@@ -118,14 +145,14 @@ async function createEnvironment(options) {
         console.log(`Executing: ${command}`);
         
         // Execute script (this will take several minutes)
-        // In production, you'd want to run this asynchronously with job tracking
         const { stdout, stderr } = await execAsync(command, {
             cwd: PROJECT_ROOT,
-            timeout: 30 * 60 * 1000 // 30 minute timeout
+            timeout: 30 * 60 * 1000, // 30 minute timeout
+            shell: true
         });
         
-        if (stderr) {
-            console.warn('Script warnings:', stderr);
+        if (stderr && !stderr.includes('WARNING')) {
+            console.warn('Script output:', stderr);
         }
         
         return {
@@ -136,6 +163,11 @@ async function createEnvironment(options) {
         };
     } catch (error) {
         console.error('Error creating environment:', error);
+        
+        if (error.message.includes('bash') || error.message.includes('not found')) {
+            throw new Error('Git Bash not found. Please install Git for Windows from https://git-scm.com/download/win');
+        }
+        
         throw new Error(`Failed to create environment: ${error.message}`);
     }
 }
@@ -148,7 +180,7 @@ async function deleteEnvironment(name, force = false) {
         const sanitizedName = sanitizeEnvironmentName(name);
         const scriptPath = path.join(PROJECT_ROOT, 'scripts', 'delete_env.sh');
         
-        let command = `bash "${scriptPath}" --name ${sanitizedName}`;
+        let command = `${BASH_CMD} "${scriptPath}" --name ${sanitizedName}`;
         if (force) {
             command += ' --force';
         }
@@ -157,11 +189,12 @@ async function deleteEnvironment(name, force = false) {
         
         const { stdout, stderr } = await execAsync(command, {
             cwd: PROJECT_ROOT,
-            timeout: 10 * 60 * 1000 // 10 minute timeout
+            timeout: 10 * 60 * 1000, // 10 minute timeout
+            shell: true
         });
         
-        if (stderr) {
-            console.warn('Script warnings:', stderr);
+        if (stderr && !stderr.includes('WARNING')) {
+            console.warn('Script output:', stderr);
         }
         
         return {
@@ -222,17 +255,18 @@ async function getEnvironmentStatus(name) {
         const sanitizedName = sanitizeEnvironmentName(name);
         const scriptPath = path.join(PROJECT_ROOT, 'scripts', 'check_env.sh');
         
-        const command = `bash "${scriptPath}" --name ${sanitizedName}`;
+        const command = `${BASH_CMD} "${scriptPath}" --name ${sanitizedName}`;
         
         const { stdout, stderr } = await execAsync(command, {
             cwd: PROJECT_ROOT,
-            timeout: 60000 // 1 minute timeout
+            timeout: 60000, // 1 minute timeout
+            shell: true
         });
         
-        // Parse the output (you can enhance this to parse structured data)
+        // Parse the output
         return {
             name: sanitizedName,
-            status: 'Running', // Parse from output
+            status: 'Running',
             details: stdout
         };
     } catch (error) {
